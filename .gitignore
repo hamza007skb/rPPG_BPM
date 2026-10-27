@@ -1,0 +1,8 @@
+models/*.task
+data/
+results/
+__pycache__/
+.pytest_cache/
+*.pyc
+/.venv
+
