@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -48,26 +51,61 @@ def parse_ground_truth(path: Path):
     return ts[:n], hr[:n]
 
 
+def _ffmpeg_frames(video: Path):
+    """Fallback reader: decode through the ffmpeg CLI (no transcoding, the file is untouched).
+    Yields (frame_bgr, fps)."""
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise RuntimeError("OpenCV can't open the video and ffmpeg/ffprobe are not on PATH (brew install ffmpeg)")
+    info = json.loads(subprocess.check_output(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height,avg_frame_rate", "-of", "json", str(video)]))["streams"][0]
+    w, h = int(info["width"]), int(info["height"])
+    num, den = info["avg_frame_rate"].split("/")
+    fps = float(num) / float(den) if float(den) else 30.0
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo",
+                          "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
+    size = w * h * 3
+    try:
+        while True:
+            buf = p.stdout.read(size)
+            if len(buf) < size:
+                break
+            yield np.frombuffer(buf, np.uint8).reshape(h, w, 3).copy(), fps
+    finally:
+        p.stdout.close(); p.kill(); p.wait()
+
+
+def _frames(video: Path):
+    """Yield (frame_bgr, fps). OpenCV first, ffmpeg pipe if OpenCV can't open/decode the file."""
+    cap = cv2.VideoCapture(str(video))
+    got = 0
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            got += 1
+            yield frame, fps
+    cap.release()
+    if got == 0:
+        print(f"[{video.parent.name}] OpenCV read 0 frames, falling back to ffmpeg", flush=True)
+        yield from _ffmpeg_frames(video)
+
+
 def extract_video(video: Path, cfg: Config, cache: Path | None):
     key = f"{video.parent.name}_{'skin' if cfg.use_skin_mask else 'noskin'}.npz"
     if cache is not None and (cache / key).exists():
         d = np.load(cache / key)
-        return d["t"], d["rgb"], d["bad"]
-    cap = cv2.VideoCapture(str(video))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        if len(d["t"]):
+            return d["t"], d["rgb"], d["bad"]
     tracker = FaceTracker()
     ext = Extractor(cfg, tracker, keep_all=True)
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    for i, (frame, fps) in enumerate(_frames(video)):
         ext.process(frame, i / fps)
-        i += 1
-    cap.release()
     tracker.close()
     t, rgb, bad = ext.arrays()
-    if cache is not None:
+    if cache is not None and len(t):
         cache.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(cache / key, t=t, rgb=rgb, bad=bad)
     return t, rgb, bad
@@ -136,6 +174,9 @@ def main():
                 print(f"[{subj}] extracting (skin={use_skin}) ...", flush=True)
                 traces[use_skin] = extract_video(v, Config(use_skin_mask=use_skin), cache)
             t, rgb, bad = traces[use_skin]
+            if len(t) == 0:
+                print(f"[{subj}] no frames read, skipping")
+                continue
             skin, weights, trk = VARIANTS[n]
             cfg = Config(use_skin_mask=skin, use_quality_weights=weights, use_tracker=trk)
             rows = replay(t, rgb, bad, cfg, gt_t, gt_hr)

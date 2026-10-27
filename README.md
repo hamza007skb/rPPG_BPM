@@ -44,10 +44,34 @@ Verified (tests + manual): signal chain recovers 54-150 BPM from synthetic trace
 glitches and follows sustained changes; ROIs and skin mask land on skin on a real face photo; the app
 and benchmark run end-to-end on a synthetic video.
 
-**Not verified: accuracy on real data.** Defaults such as `accept_snr_db`, `skin_dist`,
-`max_speed` and the Kalman settings were set from simulations. Tune them on UBFC with `--ablate`
-before claiming any numbers. Expect weak spots with heavy beards, glasses, hair over the forehead,
-very low light, and strong backlighting.
+**Real-data result (single video).** `python benchmark_ubfc.py --data-dir data/ubfc --ablate` on UBFC-rPPG
+DATASET_2 `subject4` (46 s, 38 sliding windows, 12 s window, 1 s step, oximeter HR as ground truth):
+
+| Variant | MAE (BPM) | RMSE (BPM) | Pearson r | within 5 BPM | Coverage |
+|---|---|---|---|---|---|
+| baseline | 7.27 | 10.02 | -0.24 | 50.0% | 100.0% |
+| +skin | 7.24 | 9.99 | -0.24 | 50.0% | 100.0% |
+| +skin+weights | 7.22 | 9.95 | -0.24 | 50.0% | 100.0% |
+| full (+tracker) | 2.03 | 2.88 | 0.48 | 86.8% | 100.0% |
+
+Report:
+- The BPM tracker accounts for essentially all of the gain: MAE drops from 7.22 to 2.03 BPM and
+  windows within 5 BPM rise from 50% to 86.8%. The negative r of the first three variants suggests the
+  raw spectral peak often lands on the wrong component (harmonic or motion) and the tracker's prior,
+  gating and smoothing correct this.
+- Skin segmentation and quality weighting changed MAE by only 0.05 BPM in total, which is within noise
+  on this video. No benefit from them is demonstrated here.
+- Coverage is 100% for every variant, so the tracker never abstained and MAE is not hiding dropped windows.
+- r = 0.48 for `full` is low next to its MAE. Heart rate varies little within one UBFC video, so r is
+  unreliable here; MAE and within-5 are the more meaningful numbers.
+
+**Not verified: generalisation.** These numbers come from one subject. Consecutive windows overlap
+heavily, so the 38 windows are not independent samples and the result is closer to n = 1 than n = 38.
+Do not read it as a benchmark of the method, and do not conclude from it that skin segmentation or
+weighting are useless; they may matter under motion, hair, glasses or uneven lighting that this video
+does not stress. Defaults such as `accept_snr_db`, `skin_dist`, `max_speed` and the Kalman settings were
+set from simulations and have not been tuned on UBFC. Expect weak spots with heavy beards, glasses, hair
+over the forehead, very low light, and strong backlighting.
 
 ## Files
 
